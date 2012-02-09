@@ -1,4 +1,11 @@
 #!/usr/bin/env python
+"""
+Parses pdf tennis drawsheets. 
+
+Relies on poppler's (http://poppler.freedesktop.org/) pdftotext utility; it must
+be on path for the drawsheet importer to function.
+"""
+
 import re
 import subprocess
 import readline
@@ -7,12 +14,6 @@ import pprint
 
 from tennis_datafier import debug
 
-"""
-Parses pdf tennis drawsheets. 
-
-Relies poppler's (http://poppler.freedesktop.org/) pdftotext utility; it must
-be on path for the drawsheet importer to function.
-"""
 
 ################################
 # Utility Functions            #
@@ -32,9 +33,12 @@ RE_MONTHS = [r'Jan(\.|uary)?',
           r'Nov(\.|ember)?',
           r'Dec(\.|ember)?',
       ]
+"""regexs for matching month names"""
 
 
 def month_to_int(month):
+    """convert month to int"""
+    # TODO: combine with above
     MONTH_TABLE = ((r'Jan(\.|uary)?', 1),
               (r'Feb(\.|ruary)?', 2),
               (r'Mar(\.|ch)?', 3),
@@ -56,18 +60,20 @@ def month_to_int(month):
     return None
 
 n_month = r"(?P<month>{})".format('|'.join(RE_MONTHS))
-n_month_re = (
+date_re = (
         re.compile(r"(?P<day>\d{1,2})(th)? ?- ?\d{1,2}(th)? " + 
             n_month + r",? (?P<year>\d{4})"), 
         re.compile(n_month + 
             r" (?P<day>\d{1,2})(th)? ?- ?\d{1,2}(th)?,? (?P<year>\d{4})"), 
         re.compile(r"(?P<year>\d{4})(?P<month>)(?P<day>)"),
             )
+"""3 regexs for matching dates"""
 
 def normalize_dates(dates):
+    """Takes a date string and output it as YYYY-MM-DD"""
     n_dates = []
     for date, pos in dates:
-        for r in n_month_re:
+        for r in date_re:
             m = r.match(date)
             if m:
                 d = m.groupdict()
@@ -585,6 +591,7 @@ def drawsheet_process(text, meta = None, qualifying = False):
 
     if not qualifying:
         # set to the next lowest power of 2
+        # we just hope there aren't extra fullnames in qualies
         while drawsize & (drawsize - 1) != 0:
             drawsize = drawsize & (drawsize - 1)
 
@@ -612,6 +619,8 @@ def drawsheet_process(text, meta = None, qualifying = False):
         return [c[0] for c in columns]
 
     columns = divide_into_columns(data['fullname'])
+    
+    # longer columns == earlier rounds, put them first
     columns.sort(key=lambda a: len(a), reverse=True)
 
     # find the players in the draw (i.e. first round)
@@ -628,7 +637,7 @@ def drawsheet_process(text, meta = None, qualifying = False):
     players += data['shortname']
     players += data['orderedname']
 
-    # These represent wins by that player, organize by player
+    # These represent wins by that player, organized by player
     wins = {}
     for p in players:
         name = p[0] 
@@ -642,7 +651,7 @@ def drawsheet_process(text, meta = None, qualifying = False):
     drawsheet_complete_draw(draw, wins, data['score'])
 
     # scores that weren't used are numbers, add them 
-    # one by one to numbers list
+    # one by one to the numbers list
     new_numbers = []
     for e in data['score']:
         l = e[0].split(' ')

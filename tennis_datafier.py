@@ -12,6 +12,7 @@ import codecs
 import itertools 
 import re
 import math
+import readline
 
 import drawsheet;
 
@@ -89,6 +90,67 @@ class db:
             ['version', self.DB_VERSION])
         self.conn.commit()
         c.close()
+
+
+    def insert_tournament_manually(self):
+        def enter_new_player():
+            first = input('First name: ')
+            last = input('Last name: ')
+            country = input('Counrty Code: ')
+            c.execute('INSERT INTO player '
+                '(firstname, lastname, country) ' 
+                'VALUES (?, ?, ?)', 
+                [first, last, country])
+            return c.lastrowid
+
+        def enter_player_id(prompt):
+            c = self.conn.cursor()
+            pids = []
+
+            player = input(prompt)
+            if not player:
+                return None
+
+            pids == self.get_pids(player, c)
+            if len(pids) == 0:
+                confirm = input('Player not found - are they new? [Y/n]')
+                if confirm:
+                    pid = [enter_new_player()]
+            elif len(pids) == 1:
+                pid = pids[0]
+            elif len(pids) > 1:
+                for p in pids:
+                    name = self.namefl(p, c)
+                    print('{} - {}'.format(p, name))
+
+                pid = int(input('{} players found, pick one:'.
+                    format(len(pids))))
+
+            c.close()
+            return pid
+
+        self.conn.begin()
+
+        t_name = input('Enter tournament name: ')
+        t_city = input('Enter tournament city: ')
+        t_country = input('Enter tournament country: ')
+        t_date = input('Enter tournament date: ')
+        t_surface = input('Enter tournament surface: ')
+        t_class = input('Enter tournament class: ')
+
+        while True:
+            round_ = input('Enter round designation (leave blank to finish): ')
+            if not round_:
+                break
+
+            while True:
+                winner_pid = get_player('Enter winner (leave blank to finish): ')
+                if not winner_pid:
+                    break
+
+                loser_pid = get_player('Enter loser (leave blank for bye): ')
+
+        self.conn.end()
 
 
     def insert_file_drawsheet(self, filename):
@@ -450,7 +512,10 @@ class db:
         return n[1] + ', ' + n[0]
 
 
-    def get_pids(self, name, c):
+    def get_pids(self, name, c = None):
+        if c == None:
+            c = self.conn.cursor()
+
         if ',' in name:
             l, f = [s.strip() for s in name.split(',', 1)]
         else:
@@ -735,4 +800,6 @@ if __name__ == '__main__':
             d.query_best_worst(args.players, args.rivals, 'rivals')
         if args.undefeated:
             d.query_undefeated(args.players)
+        if args.add:
+            d.insert_tournament_manually()
 
