@@ -202,8 +202,8 @@ class db:
         c.close()
 
 
-    def insert_file_drawsheet(self, filename):
-        md, qd = drawsheet.process_pdf(filename)
+    def insert_file_drawsheet(self, filename, qualies):
+        md, qd = drawsheet.process_pdf(filename, qualies)
 
         if md:
             draw, status, meta = md
@@ -819,6 +819,8 @@ if __name__ == '__main__':
             help='add a file in wta drawsheet format (requires pdftotext)')
     parser.add_argument('-a', '--add', action='store_true',
             help='add a tournament by hand')
+    parser.add_argument('-q', '--qualifying', action='store_true',
+            help='Only import qualifying draw')
 
     args = parser.parse_args()
 
@@ -836,7 +838,7 @@ if __name__ == '__main__':
                 d.insert_file_text_data(i)
         if args.wtadraw:
             for i in args.wtadraw:
-                d.insert_file_drawsheet(i)
+                d.insert_file_drawsheet(i, args.qualifying)
         if args.h2h:
             d.query_h2h(args.players)
         if args.profile:

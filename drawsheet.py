@@ -89,15 +89,20 @@ def normalize_dates(dates):
     n_dates.sort(key=lambda d: len(d), reverse=True)
     return n_dates
 
-def process_pdf(filename):
+def process_pdf(filename, qualies_only=False):
     """
     Parse the pdf file in filename.
 
     Retuns a tuple (main_draw, qualifying_draw) where each component is:
         (draw, status, meta).
     """
-    text = subprocess.check_output(["pdftotext", "-layout",
-        filename, "-"]).decode('utf-8')
+    if filename.endswith('.txt'):
+        f = open(filename)
+        text = f.read()
+        f.close()
+    else:
+        text = subprocess.check_output(["pdftotext", "-layout",
+            filename, "-"]).decode('utf-8')
 
     print("Processing {}...".format(filename))
 
@@ -119,7 +124,7 @@ def process_pdf(filename):
     qd_result = None
 
     meta = None
-    if md != '':
+    if md != '' and not qualies_only:
         md_result = drawsheet_process(md)
         meta = md_result[2]
 
@@ -142,7 +147,7 @@ def drawsheet_parse(text):
             ('date', r"\d{1,2}(th)? ?- ?\d{1,2}(th)? " + month + r",? \d{4}|" +
                      month + r" \d{1,2}(th)? ?- ?\d{1,2}(th)?,? \d{4}"),
             ('year', r"\d{4}"),
-            ('seed', r"(?<=\[)\d+(?=\])"),
+            ('seed', r"(?<=\[)\d+(?=\])|(?<=\[ )\d+(?=\ ])"),
             ('round', r"(1st|2nd|3rd) Round|1/8|1/4|1/2"),
             ('class', r"WTA( [A-Za-z0-9]+)*|US Open|"
                       r"French Open|Australian Open|Wimbledon"),
@@ -160,7 +165,7 @@ def drawsheet_parse(text):
                  r"|([0-7]/?[0-7](\(\d+\))? ){2}[\d+]/[\d+]"
                  r"|(wo.|[Ww]alkover)"),
             ('prize', r"\$[0-9,]+(?= |$)"),
-            ('number', r"\d{1,3}(?= |$)"),
+            ('number', r"\d{1,3}\.?(?= |$)"),
             ('city', r"[A-Z][A-Za-z]*( [A-Z][A-Za-z]+)*,"
                         r"( [A-Z][A-Z],)? (USA|[A-Z][a-z]*)"),
             ('status', r"(^|(?<=\[|\(| ))(Q|LL|W|WC)((?=\]|\)| )|$)"),
@@ -208,11 +213,13 @@ def drawsheet_parse(text):
         for m in pattern.finditer(line):
             for group, match in m.groupdict().items():
                 if match is not None:
+                    match = match.strip()
                     x = (m.start(group) + m.end(group)) / 2
                     #print(group + " - " + match.strip())
-                    data[group] += [(match.strip(), (x, y))]
 
-                    if group == 'fullname' and match.strip().upper() != "BYE":
+                    data[group] += [(match, (x, y))]
+
+                    if group == 'fullname' and match.upper() != "BYE":
                         add_to_fullname_conversion_table(match)
 
         y += 1
@@ -303,14 +310,14 @@ def drawsheet_complete_draw(draw, wins, scores):
     next_results = []
 
     while len(wins) > 0 and len(draw[-1]) != 1:
-        rnd_len = (int)(len(draw[-1]) / 2)
-        if rnd_len == 0:
+        
+        if len(draw[-1]) < 2:
             break
 
-        logging.debug("ROUND OF {}".format(rnd_len * 2))
+        logging.debug("ROUND OF {}".format(len(draw[-1])))
         rnd = []
         match = 0
-        while len(rnd) < rnd_len and len(wins) > 0:
+        while len(rnd) < (len(draw[-1]) / 2) and len(wins) > 0:
             prev_a = draw[-1][match * 2]
             prev_b = draw[-1][match * 2 + 1]
 
@@ -322,10 +329,12 @@ def drawsheet_complete_draw(draw, wins, scores):
                     candidates = wins[p]
 
             if len(candidates) == 0:
+                # There's something wrong, discard somebody and try again
+                del draw[-1][match * 2]
                 print("ERROR: Can't find winner for {} "
                         "v. {} in round of {}".
-                        format(prev_a[0], prev_b[0], rnd_len * 2))
-                return
+                        format(prev_a[0], prev_b[0], len(draw[-1])))
+                continue
 
             ax, ay = prev_a[1]
             bx, by = prev_b[1]
