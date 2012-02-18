@@ -13,10 +13,9 @@ import itertools
 import re
 import math
 import readline
+import logging
 
 import drawsheet;
-
-debug = False
 
 def parse_score_components(score):
     score_re = re.compile(
@@ -93,29 +92,30 @@ class db:
 
 
     def insert_tournament_manually(self):
-        def enter_new_player():
+        def enter_new_player(c):
             first = input('First name: ')
             last = input('Last name: ')
-            country = input('Counrty Code: ')
+            country = input('Country Code: ')
             c.execute('INSERT INTO player '
                 '(firstname, lastname, country) ' 
                 'VALUES (?, ?, ?)', 
                 [first, last, country])
             return c.lastrowid
 
-        def enter_player_id(prompt):
-            c = self.conn.cursor()
+        def get_player(prompt, t_id, c):
             pids = []
 
             player = input(prompt)
             if not player:
                 return None
 
-            pids == self.get_pids(player, c)
+            pids = self.get_pids(player, c)
             if len(pids) == 0:
-                confirm = input('Player not found - are they new? [Y/n]')
-                if confirm:
-                    pid = [enter_new_player()]
+                confirm = input('Player not found - are they new? [y/N]')
+                if confirm in ['Y', 'y']:
+                    pid = [enter_new_player(c)]
+                else:
+                    return None
             elif len(pids) == 1:
                 pid = pids[0]
             elif len(pids) > 1:
@@ -126,17 +126,34 @@ class db:
                 pid = int(input('{} players found, pick one:'.
                     format(len(pids))))
 
-            c.close()
+            name = self.namefl(pid, c)
+
+            c.execute('SELECT * FROM player_tournament ' 
+                'WHERE p_id=? AND t_id=?', [pid, t_id])
+
+            r = c.fetchone()
+            if r == None:
+                seed = input('Enter seed for {}: '.format(name))
+                # first entry in tournament
+                c.execute('INSERT INTO player_tournament '
+                    '(p_id, t_id, status) ' 
+                    'VALUES (?, ?, ?)', 
+                    [pid, t_id, seed])
+
             return pid
 
-        self.conn.begin()
+        c = self.conn.cursor()
 
         t_name = input('Enter tournament name: ')
         t_city = input('Enter tournament city: ')
         t_country = input('Enter tournament country: ')
-        t_date = input('Enter tournament date: ')
+        t_date = input('Enter tournament date (YYYY-MM-DD): ')
         t_surface = input('Enter tournament surface: ')
         t_class = input('Enter tournament class: ')
+
+        t_info = (t_city, t_name, t_country, t_date, t_surface, t_class)
+        t_id = self.tournament_id(c, t_info, insert=True)
+        self.conn.commit()
 
         while True:
             round_ = input('Enter round designation (leave blank to finish): ')
@@ -144,13 +161,45 @@ class db:
                 break
 
             while True:
-                winner_pid = get_player('Enter winner (leave blank to finish): ')
-                if not winner_pid:
+                winner = get_player( 'Enter winner (blank to finish): ', 
+                        t_id, c)
+                if not winner:
                     break
 
-                loser_pid = get_player('Enter loser (leave blank for bye): ')
+                loser = get_player('Enter loser (blank for bye): ',
+                        t_id, c)
 
-        self.conn.end()
+                score = input('Enter score in format: '
+                        'wo|6-1 6-3 4-1 retd|6-1(1) 6-3(9) 20-18: ')
+                matches = re.match(
+                        r'(?:'
+                        r'(\d+)-(\d+)(?:\((\d+)\))?'
+                        r'(?: (\d+)-(\d+)(?:\((\d+)\))?)?'
+                        r'(?: (\d+)-(\d+)(?:\((\d+)\))?)?'
+                        r'(?: retd)?)|wo', 
+                        score)
+                scores = [score] + list(matches.groups())
+                print('{}-{} ({}) {}-{} ({}) {}-{} ({})'.
+                        format(*matches.groups()))
+
+                c.execute('INSERT OR REPLACE INTO match'
+                        '(round, t_id, winner, loser, score, '
+                        ' score_w_1, score_l_1, score_tb_1,'
+                        ' score_w_2, score_l_2, score_tb_2,'
+                        ' score_w_3, score_l_3, score_tb_3)'
+                        'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                        [round_, t_id, winner, loser] + scores)
+
+                w_n = self.namefl(winner, c)
+                l_n = self.namefl(loser, c)
+                confirm = input('{}: {} v. {} - {} OK? [Y/n]: '.format(
+                    round_, w_n, l_n, score))
+                if confirm in ['n', 'N']:
+                    self.conn.rollback()
+                else:
+                    self.conn.commit()
+
+        c.close()
 
 
     def insert_file_drawsheet(self, filename):
@@ -249,8 +298,7 @@ class db:
                     loser = None
 
                 scores = parse_score_components(result[2])
-                if debug:
-                    print ("ADD: {}: {} v. {} - {}".
+                logging.debug("ADD: {}: {} v. {} - {}".
                             format(rnd_string, winner, loser, scores))
 
                 c.execute('INSERT OR REPLACE INTO match'
@@ -275,7 +323,6 @@ class db:
             self.conn.rollback()
         else:
             self.conn.commit()
-
 
         c.close()
 
@@ -376,8 +423,7 @@ class db:
             p2_id = None
 
         score_list = parse_score(score)
-        if debug:
-            print(p1, 'vs', p2)
+        loggin.debug(p1, 'vs', p2)
         c.execute('INSERT OR REPLACE INTO match'
                 '(round, t_id, winner, loser, score, '
                 ' score_w_1, score_l_1, score_tb_1,'
@@ -571,7 +617,10 @@ class db:
                     'FROM match WHERE loser=?', [p])
             losses = c.fetchone()[0]
 
-            win_percent = float(wins) / (wins + losses)
+            if wins + losses == 0:
+                win_percent = 'Inf'
+            else:
+                win_percent = float(wins) / (wins + losses)
 
             print("Country: {}".format(country))
             print("Overall Record: {} matches played, {}-{} ({:.3})".
@@ -774,7 +823,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.debug:
-        debug = True
+        logging.basicConfig(level=logging.DEBUG)
 
     if not args.database:
         # TODO: gui

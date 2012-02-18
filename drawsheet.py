@@ -11,9 +11,7 @@ import subprocess
 import readline
 import math
 import pprint
-
-from tennis_datafier import debug
-
+import logging
 
 ################################
 # Utility Functions            #
@@ -114,6 +112,8 @@ def process_pdf(filename):
         elif ('QUALIFYING SINGLES' in p or 'Qualifying Singles' in p
                 or 'Qualifying Ladies\' Singles' in p):
             qd += p
+        elif ('Qualifiers' in p and not 'Doubles' in p):
+            qd += p
 
     md_result = None
     qd_result = None
@@ -121,6 +121,7 @@ def process_pdf(filename):
     meta = None
     if md != '':
         md_result = drawsheet_process(md)
+        meta = md_result[2]
 
     # copy the metadata to the quaily draw if possible
     if qd != '':
@@ -149,8 +150,9 @@ def drawsheet_parse(text):
                             r" ([A-Z]+(( |-)[A-Z]+)*)(?= |$)"),
             ('fullname', r"(?:^| )[Bb][Yy][Ee](?:$| )|([A-Z]+(( |-)[A-Z]+)*,\s"
                               r"[A-Z][a-zA-Z]*(( |-)([A-Z][a-zA-Z]*[a-z]))*)"),
-            ('shortname', r"[A-Z]\. ?[A-Z]+(( |-)[A-Z]+)*"),
-            ('country', r"[A-Z]{3}(?= |$)"),
+            #('shortname', r"[A-Z]\. ?[A-Z]+(( |-)[A-Z]+)*"),
+            ('shortname', r"[A-Z]\. ?[A-Za-z]+(( |-)[A-Za-z]+)*"),
+            ('country', r"(?:(?!RET)[A-Z]{3}|\([A-Z]{3}\))(?= |$)"),
             ('score',
                  r"([0-7][/-]?[0-7](\(\d+\))?)( [0-7][/-]?[0-7](\(\d+\))?){0,2}"
                  r" ([Rr]et\.|[Rr]et'd|[Rr]etired|[Rr]et)"
@@ -171,12 +173,25 @@ def drawsheet_parse(text):
 
     short_to_fullnames = {}
     ordered_to_fullnames = {}
+    def add_to_fullname_conversion_table(fullname):
+        nm = re.match('(.*), (.)', fullname)
+        name = nm.group(2) + ". " + nm.group(1)
+        if name not in short_to_fullnames:
+            short_to_fullnames[name] = []
+
+        short_to_fullnames[name] += [(fullname, (x,y))]
+
+        nm = re.match('(.*), (.*)', fullname)
+        name = nm.group(2) + " " + nm.group(1)
+        ordered_to_fullnames[name] = fullname
+
 
     re_skip = re.compile(r'Seeded +Players')
     # Find scores, names, etc
     y = 0
     skip_page = False
 
+    # collect the data
     lines = text.split('\n');
     for line in lines:
         if skip_page and len(line) > 0:
@@ -198,19 +213,47 @@ def drawsheet_parse(text):
                     data[group] += [(match.strip(), (x, y))]
 
                     if group == 'fullname' and match.strip().upper() != "BYE":
-
-                        nm = re.match('(.*), (.)', match)
-                        name = nm.group(2) + ". " + nm.group(1)
-                        if name not in short_to_fullnames:
-                            short_to_fullnames[name] = []
-
-                        short_to_fullnames[name] += [(match, (x,y))]
-
-                        nm = re.match('(.*), (.*)', match)
-                        name = nm.group(2) + " " + nm.group(1)
-                        ordered_to_fullnames[name] = match
+                        add_to_fullname_conversion_table(match)
 
         y += 1
+
+    # hack to catch country codes that got attached to fullnames
+    if len(data['country']) > 0:
+        cc_re = re.compile(r'^([A-Z]{3}) (.*)')
+        # find known country codes
+        countries = set(list(zip(*data['country']))[0])
+        if len(data['fullname']) > len(data['country']):
+            for n, point in data['fullname']:
+                m = cc_re.match(n)
+                if m and m.group(1) in countries:
+                    country = m.group(1)
+                    name = m.group(2)
+                    idx = data['fullname'].index((n, point))
+                    del data['fullname'][idx]
+                    x, y = point
+                    data['fullname'].insert(idx, (name, (x + 4, y)))
+                    data['country'].append((country, (x, y)))
+                    add_to_fullname_conversion_table(name)
+                    if len(data['fullname']) == len(data['country']):
+                        # we're done
+                        break
+
+        # find any possible country codes
+        if len(data['fullname']) > len(data['country']):
+            for n, point in data['fullname']:
+                m = cc_re.match(n)
+                if m:
+                    country = m.group(1)
+                    name = m.group(2)
+                    idx = data['fullname'].index((n, point))
+                    del data['fullname'][idx]
+                    x, y = point
+                    data['fullname'].insert(idx, (name, (x + 4, y)))
+                    data['country'].append((country, (x, y)))
+                    add_to_fullname_conversion_table(name)
+                    if len(data['fullname']) == len(data['country']):
+                        # we're done
+                        break
 
     orderednames = []
     for n, point in data['orderedname']:
@@ -230,6 +273,7 @@ def drawsheet_parse(text):
 
     shortnames = []
     for n, point in data['shortname']:
+        n = n.upper()
         if n[2] != ' ':
             short = n[0:2] + ' ' + n[2:]
         else:
@@ -245,8 +289,9 @@ def drawsheet_parse(text):
 
     data['shortname'] = shortnames
 
-    if debug:
-        pprint.pprint(data)
+
+
+    logging.debug(pprint.pformat(data))
 
     return data;
 
@@ -262,16 +307,14 @@ def drawsheet_complete_draw(draw, wins, scores):
         if rnd_len == 0:
             break
 
-        if debug:
-            print("ROUND OF {}".format(rnd_len * 2))
+        logging.debug("ROUND OF {}".format(rnd_len * 2))
         rnd = []
         match = 0
         while len(rnd) < rnd_len and len(wins) > 0:
             prev_a = draw[-1][match * 2]
             prev_b = draw[-1][match * 2 + 1]
 
-            if debug:
-                print("\tMatchup: {} v. {}".format(prev_a[0], prev_b[0]))
+            logging.debug("\tMatchup: {} v. {}".format(prev_a[0], prev_b[0]))
 
             candidates = []
             for p in (prev_a[0], prev_b[0]):
@@ -306,8 +349,7 @@ def drawsheet_complete_draw(draw, wins, scores):
             else:
                 score = drawsheet_get_score(winner, scores)
 
-            if debug:
-                print("\t\tWINNER {} ({})".format(winner[0], score))
+            logging.debug("\t\tWINNER {} ({})".format(winner[0], score))
 
             if winner[0] == prev_a[0]:
                 loser = prev_b[0]
@@ -472,8 +514,7 @@ def drawsheet_players_status(draw, data):
     numbers = data['number']
     for p in draw[0]:
         numbers.sort(key=lambda n: distance(n[1], p[1]))
-        if debug:
-            print ("Discarding draw pos: {} - {}".format(numbers[0], p))
+        logging.debug("Discarding draw pos: {} - {}".format(numbers[0], p))
         del numbers[0]
 
     
@@ -665,11 +706,10 @@ def drawsheet_process(text, meta = None, qualifying = False):
 
     # fill in status and country info
     status = drawsheet_players_status(draw, data)
-    if debug:
-        print ("######## DRAW ########")
-        pprint.pprint(draw)
-        print ("######## STATUS ########")
-        pprint.pprint(status)
+    logging.debug("######## DRAW ########")
+    logging.debug(pprint.pformat(draw))
+    logging.debug("######## STATUS ########")
+    logging.debug(pprint.pformat(status))
 
     # Ask the user to confirm the data
     
