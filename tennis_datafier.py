@@ -594,6 +594,47 @@ class db:
 
         return [i[0] for i in a]
 
+    def print_record(self, pid, n=None):
+        c = self.conn.cursor()
+        if n:
+            limit = 'LIMIT {}'.format(n)
+        else:
+            limit = ''
+
+        c.execute('SELECT date, city, class, round, '
+                ' winner, p1.status AS p1s, '
+                'loser, p2.status AS p2s, score, surface ' 
+                'FROM match '
+                    'NATURAL INNER JOIN tournament '
+                    'INNER JOIN player_tournament AS p1 ON '
+                        'p1.p_id=match.winner AND '
+                        'p1.t_id=match.t_id '
+                    'INNER JOIN player_tournament AS p2 ON '
+                        'p2.p_id=match.loser AND '
+                        'p2.t_id=match.t_id '
+                'WHERE winner==? OR loser==? '
+                'ORDER BY date DESC ' + limit, 
+                [pid, pid])
+        matches = c.fetchall()
+
+        for m in matches:
+            print('{} - {} {}: {} {}({}) d. {}({}) {} {}'.format(
+                m[0], m[1], m[2], m[3], self.namefil(m[4]),
+                m[5], self.namefil(m[6]), m[7], m[8], m[9]))
+
+
+    def query_record(self, players):
+        c = self.conn.cursor()
+
+        pids = []
+        for p in players:
+            pids += self.get_pids(p, c)
+
+        for p in pids:
+            print()
+            print("Record for {}:".format(self.namefl(p)))
+            self.print_record(p)
+
     def query_profile(self, players):
         c = self.conn.cursor()
 
@@ -625,6 +666,10 @@ class db:
             print("Country: {}".format(country))
             print("Overall Record: {} matches played, {}-{} ({:.3})".
                     format(wins + losses, wins, losses, win_percent))
+
+            print("Last 10 matches:")
+            self.print_record(p, 10)
+
         c.close()
 
     def query_undefeated(self, players):
@@ -793,10 +838,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
             description='Query a tennis-datafier database')
 
-    parser.add_argument('database', nargs='?', 
-            help='Database to operate on')
-    parser.add_argument('-d', '--debug', action='store_true', 
+    parser.add_argument('--debug', action='store_true', 
             help='Debug output')
+    parser.add_argument('-d', '--database', default='tennis.db',
+            metavar='FILE',
+            help='Database to operate on (default is tennis.db)')
     parser.add_argument('players', metavar="PLAYER", nargs='*', 
             help='players to operate on')
 
@@ -805,6 +851,8 @@ if __name__ == '__main__':
             help='Look up profiles for players')
     parser.add_argument('-2', '--h2h', action='store_true',
             help='Look up h2h for given players')
+    parser.add_argument('-c', '--record', action='store_true', 
+            help='Get complete record for this player')
     parser.add_argument('-r', '--rivals', metavar='N', 
             help='Look up the N biggest rivals for given players')
     parser.add_argument('-b', '--best', metavar='N', 
@@ -827,30 +875,31 @@ if __name__ == '__main__':
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
 
-    if not args.database:
-        # TODO: gui
-        parser.print_help()
-    else:
-        d = db(args.database)
+    d = db(args.database)
 
-        if args.text_data:
-            for i in args.text_data:
-                d.insert_file_text_data(i)
-        if args.wtadraw:
-            for i in args.wtadraw:
-                d.insert_file_drawsheet(i, args.qualifying)
-        if args.h2h:
-            d.query_h2h(args.players)
-        if args.profile:
-            d.query_profile(args.players)
-        if args.best:
-            d.query_best_worst(args.players, args.best, 'best')
-        if args.worst:
-            d.query_best_worst(args.players, args.worst, 'worst')
-        if args.rivals:
-            d.query_best_worst(args.players, args.rivals, 'rivals')
-        if args.undefeated:
-            d.query_undefeated(args.players)
-        if args.add:
-            d.insert_tournament_manually()
+    if args.text_data:
+        for i in args.text_data:
+            d.insert_file_text_data(i)
+    elif args.wtadraw:
+        for i in args.wtadraw:
+            d.insert_file_drawsheet(i, args.qualifying)
+    elif args.h2h:
+        d.query_h2h(args.players)
+    elif args.profile:
+        d.query_profile(args.players)
+    elif args.record:
+        d.query_record(args.players)
+    elif args.best:
+        d.query_best_worst(args.players, args.best, 'best')
+    elif args.worst:
+        d.query_best_worst(args.players, args.worst, 'worst')
+    elif args.rivals:
+        d.query_best_worst(args.players, args.rivals, 'rivals')
+    elif args.undefeated:
+        d.query_undefeated(args.players)
+    elif args.add:
+        d.insert_tournament_manually()
+    else:
+        parser.print_help()
+
 

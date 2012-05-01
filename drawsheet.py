@@ -108,29 +108,29 @@ def process_pdf(filename, qualies_only=False):
 
     pages = text.split(chr(12))
     print ("{} Pages".format(len(pages)))
-    md = ''
-    qd = ''
+    md = []
+    qd = []
     for p in pages:
         if ('MAIN DRAW SINGLES' in p or 'Singles Championship' in p
                 or 'Ladies\' Singles' in p):
-            md += p
+            md += [p]
         elif ('QUALIFYING SINGLES' in p or 'Qualifying Singles' in p
                 or 'Qualifying Ladies\' Singles' in p):
-            qd += p
+            qd += [p]
         elif ('Qualifiers' in p and not 'Doubles' in p):
-            qd += p
+            qd += [p]
 
     md_result = None
     qd_result = None
 
     meta = None
-    if md != '' and not qualies_only:
-        md_result = drawsheet_process(md)
+    if md and not qualies_only:
+        md_result = drawsheet_process(chr(12).join(md))
         meta = md_result[2]
 
     # copy the metadata to the quaily draw if possible
-    if qd != '':
-        qd_result = drawsheet_process(qd, meta, True)
+    if qd:
+        qd_result = drawsheet_process(chr(12).join(qd), meta, True)
 
     return (md_result, qd_result)
 
@@ -194,20 +194,20 @@ def drawsheet_parse(text):
     re_skip = re.compile(r'Seeded +Players')
     # Find scores, names, etc
     y = 0
-    skip_page = False
+    skipping_page = False
 
     # collect the data
     lines = text.split('\n');
     for line in lines:
-        if skip_page and len(line) > 0:
-            if line[0] == chr(12):
-                skip_page = False
+        if skipping_page:
+            if chr(12) in line:
+                skipping_page = False
             else:
                 continue
 
         if (re_skip.search(line)):
             # skip the seeding/info section, it's useless
-            skip_page = True
+            skipping_page = True
             continue;
 
         for m in pattern.finditer(line):
@@ -295,8 +295,6 @@ def drawsheet_parse(text):
             data['string'] += [(n, point)]
 
     data['shortname'] = shortnames
-
-
 
     logging.debug(pprint.pformat(data))
 
@@ -657,7 +655,7 @@ def drawsheet_process(text, meta = None, qualifying = False):
                 
             added = False
             for column in columns:
-                if abs(column[1] - x) < 25:
+                if abs(column[1] - x) < 30:
                     column[0] += [p]
                     added = True
                     break
