@@ -423,7 +423,7 @@ class db:
             p2_id = None
 
         score_list = parse_score(score)
-        loggin.debug(p1, 'vs', p2)
+        logging.debug(p1, 'vs', p2)
         c.execute('INSERT OR REPLACE INTO match'
                 '(round, t_id, winner, loser, score, '
                 ' score_w_1, score_l_1, score_tb_1,'

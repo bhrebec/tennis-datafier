@@ -139,6 +139,8 @@ def drawsheet_parse(text):
     """
     Parse the drawsheet into useful atoms
     """
+    logging.debug("################ PARSING DRAW ##################")
+
     month = "({})".format('|'.join(RE_MONTHS))
 
     patterns = (
@@ -178,7 +180,7 @@ def drawsheet_parse(text):
 
     short_to_fullnames = {}
     ordered_to_fullnames = {}
-    def add_to_fullname_conversion_table(fullname):
+    def add_to_fullname_conversion_table(fullname, x, y):
         nm = re.match('(.*), (.)', fullname)
         name = nm.group(2) + ". " + nm.group(1)
         if name not in short_to_fullnames:
@@ -197,6 +199,7 @@ def drawsheet_parse(text):
     skipping_page = False
 
     # collect the data
+    width = 0
     lines = text.split('\n');
     for line in lines:
         if skipping_page:
@@ -214,13 +217,16 @@ def drawsheet_parse(text):
             for group, match in m.groupdict().items():
                 if match is not None:
                     match = match.strip()
-                    x = (m.start(group) + m.end(group)) / 2
-                    #print(group + " - " + match.strip())
+                    x1 = m.start(group)
+                    x2 = m.end(group)
 
-                    data[group] += [(match, (x, y))]
+                    if x2 > width:
+                        width = x2
+
+                    data[group] += [(match, ((x1, x2), y))]
 
                     if group == 'fullname' and match.upper() != "BYE":
-                        add_to_fullname_conversion_table(match)
+                        add_to_fullname_conversion_table(match, (x1, x2), y)
 
         y += 1
 
@@ -237,9 +243,9 @@ def drawsheet_parse(text):
                     name = m.group(2)
                     idx = data['fullname'].index((n, point))
                     del data['fullname'][idx]
-                    x, y = point
-                    data['fullname'].insert(idx, (name, (x + 4, y)))
-                    data['country'].append((country, (x, y)))
+                    (x1, x2), y = point
+                    data['fullname'].insert(idx, (name, ((x1 + 4), x2, y)))
+                    data['country'].append((country, ((x1, x1 + 3), y)))
                     add_to_fullname_conversion_table(name)
                     if len(data['fullname']) == len(data['country']):
                         # we're done
@@ -254,9 +260,9 @@ def drawsheet_parse(text):
                     name = m.group(2)
                     idx = data['fullname'].index((n, point))
                     del data['fullname'][idx]
-                    x, y = point
-                    data['fullname'].insert(idx, (name, (x + 4, y)))
-                    data['country'].append((country, (x, y)))
+                    (x1, x2), y = point
+                    data['fullname'].insert(idx, (name, ((x1 + 4, x2), y)))
+                    data['country'].append((country, ((x1, x1 + 3), y)))
                     add_to_fullname_conversion_table(name)
                     if len(data['fullname']) == len(data['country']):
                         # we're done
@@ -273,11 +279,18 @@ def drawsheet_parse(text):
     data['orderedname'] = orderednames
 
     def distance(a, b):
-        dx = float(a[0] - b[0]) / 10
+        ax1, ax2 = a[0]
+        bx1, bx2 = b[0]
+        ax = (ax1 + ax2) / 2
+        bx = (bx1 + bx2) / 2
+        dx = float(ax - bx) / 10
         dy = float(a[1] - b[1])
 
         return math.sqrt(dx * dx + dy * dy)
 
+    # assign shortnames to longnames
+    # some people share a shortname, so assign to 
+    # the longname that is closest
     shortnames = []
     for n, point in data['shortname']:
         n = n.upper()
@@ -298,7 +311,7 @@ def drawsheet_parse(text):
 
     logging.debug(pprint.pformat(data))
 
-    return data;
+    return data, width;
 
 def drawsheet_complete_draw(draw, wins, scores):
     """
@@ -306,6 +319,8 @@ def drawsheet_complete_draw(draw, wins, scores):
     """
     current_results = []
     next_results = []
+
+    logging.debug("################ PROCESSING DRAW ###############")
 
     while len(wins) > 0 and len(draw[-1]) != 1:
         
@@ -501,6 +516,8 @@ def drawsheet_players_status(draw, data):
     Return dict of each player's status
     """
 
+    logging.debug("######## CALCULATING STATUS ########")
+
     # 1. Discard draw position for each player
     # 2. Find players for seeding or Q or WC or LL status
     # 3. Find country for each player
@@ -527,12 +544,19 @@ def drawsheet_players_status(draw, data):
     
     # 2. Find players for seeding or Q or WC or LL status
 
-    # 2a. group seeds by number
-    seedlist = numbers + data['seed']
-    seeds = { s: [] for s, pos in seedlist }
+    # 2a. group potential seeds by number
+    max_seed = len(draw[0]) / 2
+
+    seedlist = data['seed'] + numbers
+    seeds = { s: [] for s, pos in seedlist if int(s) <= max_seed}
     
     for s, pos in seedlist:
-        seeds[s] += [pos]
+        if int(s) <= max_seed:
+            seeds[s] += [pos]
+
+    seeds = sorted(seeds.items(), key=lambda a: int(a[0]))
+
+    logging.debug("Seeds available: {}".format(pprint.pformat(seeds)))
 
     status = { name: (None, None) for name, position in draw[0] 
             if name != "BYE"}
@@ -540,16 +564,19 @@ def drawsheet_players_status(draw, data):
     players_flat = [p for l in draw for p in l if p[0] != "BYE"]
 
     # for each seed, find the matching player and vote
-    for s, poslist in seeds.items():
+    last_seed = 0
+    for s, poslist in seeds:
+
         candidates = {}
         for pos in poslist:
-            player = min(players_flat, key=lambda p: distance(pos, p[1]))
+            player = min(players_flat, key=lambda p: distance2(pos, p[1]))
             if player[0] in candidates:
                 candidates[player[0]] += 1
             else:
                 candidates[player[0]] = 1
         vote = max(candidates.items(), key=lambda c: c[1])[0]
-        status[vote] = (s, None)
+        if status[vote][0] is None:
+            status[vote] = (s, None)
 
     # 2b. assign other status
 
@@ -632,7 +659,9 @@ def drawsheet_process(text, meta = None, qualifying = False):
     Parse and process a drawsheet
     returns (draw, status, meta)
     """
-    data = drawsheet_parse(text)
+    data, width = drawsheet_parse(text)
+
+    logging.debug("################# POST-PROCESS DRAW ##################3")
 
     # get drawsize
     drawsize = len(data['fullname'])
@@ -643,11 +672,49 @@ def drawsheet_process(text, meta = None, qualifying = False):
         while drawsize & (drawsize - 1) != 0:
             drawsize = drawsize & (drawsize - 1)
 
+    logging.debug("Physical Width: {}".format(width))
+    logging.debug("Drawsize: {}".format(drawsize))
+
+    # find the correnct x-values to use
+    middle = width / 2
+    left_count = 0
+    right_count = 0
+    for d in data['fullname']:
+        ((x1, x2), y) = d[1]
+        if (x1 + x2) / 2 < middle:
+            left_count += 1
+        else:
+            right_count += 1
+
+    logging.debug("Left Side: {} players".format(left_count))
+    logging.debug("Right Side: {} players".format(right_count))
+
+    # set the x value by page side
+    # if they're about even, we're looking at a double-sided draw
+    # otherwise, we use the left-hand value
+    if left_count - right_count < 5:
+        double_sided = True
+        logging.debug("Doublesized: True")
+    else:
+        double_sided = False
+        logging.debug("Doublesized: False")
+
+
+    for k, datum in data.items():
+        new_datum = []
+        for d in datum:
+            ((x1, x2), y) = d[1]
+            if double_sided and (x1 + x2) / 2 > middle:
+                new_datum += [(d[0], (x2, y))]
+            else:
+                new_datum += [(d[0], (x1, y))]
+        data[k] = new_datum
+
     # divide base draw into columns
     def divide_into_columns(playerlist):
         columns = []
         for p in playerlist:
-            (x, y) = p[1]
+            x, y = p[1]
             if len(columns) == 0:
                 # first column
                 columns += [[[p], x]]
@@ -655,7 +722,9 @@ def drawsheet_process(text, meta = None, qualifying = False):
                 
             added = False
             for column in columns:
-                if abs(column[1] - x) < 30:
+                last, (last_x, last_y) = column[0][-1]
+                if (abs(column[1] - x) < 15 
+                        and abs(last_y - y) < 6):
                     column[0] += [p]
                     added = True
                     break
@@ -667,6 +736,9 @@ def drawsheet_process(text, meta = None, qualifying = False):
         return [c[0] for c in columns]
 
     columns = divide_into_columns(data['fullname'])
+
+    logging.debug("################# COLUMNS ##################3")
+    logging.debug(pprint.pformat(columns))
     
     # longer columns == earlier rounds, put them first
     columns.sort(key=lambda a: len(a), reverse=True)
