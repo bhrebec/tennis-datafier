@@ -36,6 +36,20 @@ def parse_score_components(score):
                 d['w3'], d['l3'], d['tb3'],
                 ]
 
+def get_date_clause(start, end):
+    if not start and not end:
+        return ''
+
+    clause = ' AND ('
+    if start:
+         clause += "date >= '{}'".format(start)
+    if start and end:
+         clause += ' AND '
+    if end:
+         clause += "date <= '{}'".format(end)
+    clause += ') '
+    return clause
+
 class db:
     def __init__(self, dbfile):
         self.DB_VERSION = 1
@@ -55,7 +69,7 @@ class db:
         self.conn.create_function('rivals_sort', 2, self.rivals_sort)
 
     def rivals_sort(self, wins, losses):
-        diff = abs(wins - losses)
+        diff = abs(wins - losses) * 2
         total = wins + losses
 
         return total - diff
@@ -83,7 +97,7 @@ class db:
                     'loser REFERENCES player(p_id), score, '
                     'score_w_1, score_l_1, score_w_2, score_l_2, '
                     'score_w_3, score_l_3, score_tb_1, score_tb_2, '
-                    'score_tb_3, PRIMARY KEY(round, t_id, winner))')
+                    'score_tb_3, PRIMARY KEY(round, t_id, winner, loser))')
 
         c.execute('INSERT OR REPLACE INTO info(key, value) VALUES (?, ?)',
             ['version', self.DB_VERSION])
@@ -594,7 +608,7 @@ class db:
 
         return [i[0] for i in a]
 
-    def print_record(self, pid, n=None):
+    def print_matches(self, pid, n=None, start=None, end=None):
         c = self.conn.cursor()
         if n:
             limit = 'LIMIT {}'.format(n)
@@ -612,7 +626,8 @@ class db:
                     'INNER JOIN player_tournament AS p2 ON '
                         'p2.p_id=match.loser AND '
                         'p2.t_id=match.t_id '
-                'WHERE winner==? OR loser==? '
+                'WHERE (winner==? OR loser==?) '
+                + get_date_clause(start, end) +
                 'ORDER BY date DESC ' + limit, 
                 [pid, pid])
         matches = c.fetchall()
@@ -622,8 +637,7 @@ class db:
                 m[0], m[1], m[2], m[3], self.namefil(m[4]),
                 m[5], self.namefil(m[6]), m[7], m[8], m[9]))
 
-
-    def query_record(self, players):
+    def action_matches(self, players, start, end):
         c = self.conn.cursor()
 
         pids = []
@@ -633,9 +647,134 @@ class db:
         for p in pids:
             print()
             print("Record for {}:".format(self.namefl(p)))
-            self.print_record(p)
+            self.print_matches(p, start=start, end=end)
 
-    def query_profile(self, players):
+    def action_tournament(self, t_fuzzy, start, end):
+        c = self.conn.cursor()
+
+        c.execute('SELECT t_id, city, country, name, class FROM tournament WHERE '
+                '(city=? OR name=? OR country=? OR '
+                'surface=? OR class=?) ' + get_date_clause(start, end)
+                + ' ORDER BY date ASC'
+                , [t_fuzzy, t_fuzzy, t_fuzzy, t_fuzzy, t_fuzzy])
+        tournaments = c.fetchall()
+
+        for t, city, country, name, class_ in tournaments:
+            print('{}: {}, {} - {}'.format(name, city, country, class_))
+            c.execute('SELECT date, city, class, round, '
+                    ' winner, p1.status AS p1s, '
+                    'loser, p2.status AS p2s, score, surface ' 
+                    'FROM match '
+                        'NATURAL INNER JOIN tournament '
+                        'INNER JOIN player_tournament AS p1 ON '
+                            'p1.p_id=match.winner AND '
+                            'p1.t_id=match.t_id '
+                        'INNER JOIN player_tournament AS p2 ON '
+                            'p2.p_id=match.loser AND '
+                            'p2.t_id=match.t_id '
+                    'WHERE tournament.t_id=?'
+                    'ORDER BY round ASC ', 
+                    [t])
+            matches = c.fetchall()
+
+            for m in matches:
+                print('{} - {} {}: {} {}({}) d. {}({}) {} {}'.format(
+                    m[0], m[1], m[2], m[3], self.namefil(m[4]),
+                    m[5], self.namefil(m[6]), m[7], m[8], m[9]))
+            print()
+
+
+    def print_record(self, pid, start, end):
+        def make_percent(wins, losses):
+            if wins + losses == 0:
+                return 'Inf'
+            else:
+                return float(wins) / (wins + losses)
+
+        c = self.conn.cursor()
+        c.execute('SELECT count(*) ' 
+                'FROM match NATURAL INNER JOIN tournament '
+                'WHERE winner=? AND loser IS NOT NULl'
+                + get_date_clause(start, end)
+                , [pid])
+        wins = c.fetchone()[0]
+
+        c.execute('SELECT count(*) ' 
+                'FROM match NATURAL INNER JOIN tournament WHERE loser=?'
+                + get_date_clause(start, end)
+                , [pid])
+        losses = c.fetchone()[0]
+
+
+        c.execute('SELECT surface, count(*) ' 
+                'FROM match NATURAL INNER JOIN tournament WHERE winner=? '
+                + get_date_clause(start, end) +
+                'AND loser IS NOT NULl GROUP BY surface', [pid])
+        surface_wins = dict(c.fetchall())
+
+        c.execute('SELECT surface, count(*) ' 
+                'FROM match NATURAL INNER JOIN tournament '
+                'WHERE loser=? '
+                + get_date_clause(start, end) +
+                'GROUP BY surface', [pid])
+        surface_losses = dict(c.fetchall())
+
+        surface_record = {}
+        for s, w in surface_wins.items():
+            if s in surface_losses:
+                surface_record[s] = (w, surface_losses[s])
+                del surface_losses[s]
+            else:
+                surface_record[s] = (w, 0)
+
+        for s, w in surface_losses.items():
+            surface_record[s] = (0, w)
+
+        print("Overall Record: {} matches played, {}-{} ({:.3})".
+                format(wins + losses, wins, losses, 
+                    make_percent(wins, losses)))
+
+        indoor_record = (0,0)
+        summary_record = {
+                'Clay' : (0,0),
+                'Hard' : (0,0),
+                'Grass' : (0,0),
+                'Carpet' : (0,0),
+                }
+        for s, (w, l) in sorted(surface_record.items(), key=lambda a: a[0]):
+            if s.startswith('Indoor'):
+                c_w, c_l = indoor_record
+                indoor_record = (c_w + w, c_l + l)
+
+            for sr, (c_w, c_l) in summary_record.items():
+                if s.endswith(sr):
+                    summary_record[sr] = (c_w + w, c_l + l)
+
+            print("\t... on {}: {} matches played, {}-{} ({:.3})".
+                    format(s, w+l, w, l, make_percent(w, l)))
+
+        print("\tin Summary:")
+
+        for s, (w, l) in summary_record.items():
+            print("\tAll {}: {} matches played, {}-{} ({:.3})".
+                    format(s, w+l, w, l, make_percent(w, l)))
+        w, l = indoor_record
+        print("\tRecord Indoors: {} matches played, {}-{} ({:.3})".
+                format(w+l, w, l, make_percent(w, l)))
+
+
+    def action_record(self, players, start, end):
+        c = self.conn.cursor()
+
+        pids = []
+        for p in players:
+            pids += self.get_pids(p, c)
+
+        for p in pids:
+            self.print_record(p, start, end)
+
+
+    def action_profile(self, players, start, end):
         c = self.conn.cursor()
 
         pids = []
@@ -650,29 +789,15 @@ class db:
                     'FROM player WHERE p_id=?', [p])
             country = c.fetchone()[0]
 
-            c.execute('SELECT count(*) ' 
-                    'FROM match WHERE winner=? AND loser IS NOT NULl', [p])
-            wins = c.fetchone()[0]
-
-            c.execute('SELECT count(*) ' 
-                    'FROM match WHERE loser=?', [p])
-            losses = c.fetchone()[0]
-
-            if wins + losses == 0:
-                win_percent = 'Inf'
-            else:
-                win_percent = float(wins) / (wins + losses)
-
             print("Country: {}".format(country))
-            print("Overall Record: {} matches played, {}-{} ({:.3})".
-                    format(wins + losses, wins, losses, win_percent))
-
+            self.print_record(p, start, end)
+            print()
             print("Last 10 matches:")
-            self.print_record(p, 10)
+            self.print_matches(p, 10, start=start, end=end)
 
         c.close()
 
-    def query_undefeated(self, players):
+    def action_undefeated(self, players, start, end):
         c = self.conn.cursor()
 
         pids = []
@@ -686,8 +811,9 @@ class db:
                 SELECT loser, count(winner)
                 FROM match as w
                 WHERE winner=? AND loser IS NOT NULL AND NOT EXISTS (
-                    SELECT * FROM match as l 
-                        WHERE loser=? AND l.winner=w.loser)
+                    SELECT * FROM match NATURAL INNER JOIN tournament as l 
+                        WHERE loser=? AND l.winner=w.loser """
+                        + get_date_clause(start, end) + """)
                 GROUP BY loser
                 ORDER BY count(winner) DESC""", [p] * 2)
 
@@ -701,8 +827,9 @@ class db:
                 SELECT winner, count(loser)
                 FROM match as l
                 WHERE loser=? AND NOT EXISTS (
-                    SELECT * FROM match as w 
-                        WHERE winner=? AND w.loser=l.winner)
+                    SELECT * FROM match NATURAL INNER JOIN tournament as w 
+                        WHERE winner=? AND w.loser=l.winner """
+                        + get_date_clause(start, end) + """)
                 GROUP BY winner
                 ORDER BY count(winner) DESC""", [p] * 2)
 
@@ -712,7 +839,7 @@ class db:
 
         c.close()
 
-    def query_best_worst(self, players, n, operation='best'):
+    def action_best_worst(self, players, n, operation='best', start=None, end=None):
         c = self.conn.cursor()
 
         pids = []
@@ -732,36 +859,40 @@ class db:
             print("invalid op in best_worst()")
             return
 
+        d_c = get_date_clause(start, end)
+
         for p in pids:
-            # sqlite doesn't support FULL OUT JOIN, this is the workaround
+            # sqlite doesn't support FULL OUTER JOIN, this is the workaround
             c.execute("""
          SELECT wins.opponent, wins.win_count, losses.loss_count
             FROM (SELECT winner as player, 
                     loser as opponent, count(*) as win_count
-                    FROM match 
-                    WHERE winner=? AND loser IS NOT NULL
+                    FROM match NATURAL INNER JOIN tournament
+                    WHERE winner=? AND loser IS NOT NULL """ + d_c + """
                     GROUP BY loser
                 UNION ALL 
                 SELECT DISTINCT loser as player, 
                         winner as opponent, 0 as win_count
-                    FROM match as l
+                    FROM match as l NATURAL INNER JOIN tournament
                     WHERE loser=? AND NOT EXISTS (
-                        SELECT * FROM match as w 
-                            WHERE winner=? AND w.loser=l.winner)
+                        SELECT * FROM match as w NATURAL INNER JOIN tournament
+                            WHERE winner=? AND w.loser=l.winner """ + d_c + """)
+                        """ + d_c + """
                 ) AS wins
                 INNER JOIN
                 (SELECT loser as player, winner as opponent, 
                         count(*) as loss_count
-                    FROM match 
-                    WHERE loser=?
+                    FROM match NATURAL INNER JOIN tournament
+                    WHERE loser=? """ + d_c + """
                     GROUP BY winner
                 UNION ALL 
                 SELECT DISTINCT winner as player, loser as opponent, 
                         0 as loss_count
-                    FROM match as w
+                    FROM match as w NATURAL INNER JOIN tournament
                     WHERE winner=? AND loser IS NOT NULL AND NOT EXISTS (
-                        SELECT * FROM match as l 
-                            WHERE loser=? AND l.winner=w.loser)
+                        SELECT * FROM match as l NATURAL INNER JOIN tournament
+                            WHERE loser=? AND l.winner=w.loser """ + d_c + """)
+                        """ + d_c + """
                 ) AS losses
                 ON wins.player==losses.player 
                     AND wins.opponent==losses.opponent """
@@ -782,7 +913,7 @@ class db:
 
         c.close()
 
-    def query_h2h(self, players):
+    def action_h2h(self, players, start, end):
         c = self.conn.cursor()
 
         pids = []
@@ -796,11 +927,17 @@ class db:
 
         for p1, p2 in itertools.combinations(pids, 2):
             c.execute('SELECT count(winner) ' 
-                    'FROM match WHERE winner=? AND loser=?', [p1, p2])
+                    'FROM match NATURAL INNER JOIN tournament '
+                    'WHERE winner=? AND loser=?'
+                        + get_date_clause(start, end)
+                    , [p1, p2])
             p1wins = c.fetchone()[0]
 
             c.execute('SELECT count(winner) ' 
-                    'FROM match WHERE winner=? AND loser=?', [p2, p1])
+                    'FROM match NATURAL INNER JOIN tournament '
+                    'WHERE winner=? AND loser=?'
+                        + get_date_clause(start, end)
+                    , [p2, p1])
             p2wins = c.fetchone()[0]
 
             c.execute('SELECT date, city, class, round, '
@@ -814,7 +951,9 @@ class db:
                         'INNER JOIN player_tournament AS p2 ON '
                             'p2.p_id=match.loser AND '
                             'p2.t_id=match.t_id '
-                    'WHERE winner IN (?,?) AND loser IN (?,?) ORDER BY date DESC', 
+                    'WHERE winner IN (?,?) AND loser IN (?,?)' 
+                        + get_date_clause(start, end) + 
+                    'ORDER BY date DESC', 
                     [p1, p2] * 2)
             matches = c.fetchall()
 
@@ -851,8 +990,10 @@ if __name__ == '__main__':
             help='Look up profiles for players')
     parser.add_argument('-2', '--h2h', action='store_true',
             help='Look up h2h for given players')
-    parser.add_argument('-c', '--record', action='store_true', 
-            help='Get complete record for this player')
+    parser.add_argument('-c', '--matches', action='store_true', 
+            help='Get complete match record for this player')
+    parser.add_argument('-o', '--tournament', metavar='TOURNY', 
+            help='Get complete tournament record')
     parser.add_argument('-r', '--rivals', metavar='N', 
             help='Look up the N biggest rivals for given players')
     parser.add_argument('-b', '--best', metavar='N', 
@@ -869,6 +1010,12 @@ if __name__ == '__main__':
             help='add a tournament by hand')
     parser.add_argument('-q', '--qualifying', action='store_true',
             help='Only import qualifying draw')
+    parser.add_argument('-s', '--start', metavar="DATE",
+            default=None,
+            help='Restrict results to after this date')
+    parser.add_argument('-e', '--end', metavar="DATE",
+            default=None,
+            help='Restrict results to after this date')
 
     args = parser.parse_args()
 
@@ -884,19 +1031,28 @@ if __name__ == '__main__':
         for i in args.wtadraw:
             d.insert_file_drawsheet(i, args.qualifying)
     elif args.h2h:
-        d.query_h2h(args.players)
+        d.action_h2h(args.players,
+                args.start, args.end)
+    elif args.tournament:
+        d.action_tournament(args.tournament, args.start, args.end)
     elif args.profile:
-        d.query_profile(args.players)
-    elif args.record:
-        d.query_record(args.players)
+        d.action_profile(args.players,
+                args.start, args.end)
+    elif args.matches:
+        d.action_matches(args.players,
+                args.start, args.end)
     elif args.best:
-        d.query_best_worst(args.players, args.best, 'best')
+        d.action_best_worst(args.players, args.best, 'best', 
+                args.start, args.end)
     elif args.worst:
-        d.query_best_worst(args.players, args.worst, 'worst')
+        d.action_best_worst(args.players, args.worst, 'worst',
+                args.start, args.end)
     elif args.rivals:
-        d.query_best_worst(args.players, args.rivals, 'rivals')
+        d.action_best_worst(args.players, args.rivals, 'rivals',
+                args.start, args.end)
     elif args.undefeated:
-        d.query_undefeated(args.players)
+        d.action_undefeated(args.players,
+                args.start, args.end)
     elif args.add:
         d.insert_tournament_manually()
     else:
